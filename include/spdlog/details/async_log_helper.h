@@ -125,6 +125,18 @@ public:
     using clock = std::chrono::steady_clock;
 
 
+    static std::shared_ptr<async_log_helper> pooled_async_log_helper(
+        formatter_ptr formatter,
+        const std::vector<sink_ptr>& sinks,
+        size_t queue_size,
+        const log_err_handler err_handler,
+        const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
+        const std::function<void()>& worker_warmup_cb = nullptr,
+        const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+        const std::function<void()>& worker_teardown_cb = nullptr
+    );
+
+
     async_log_helper(formatter_ptr formatter,
                      const std::vector<sink_ptr>& sinks,
                      size_t queue_size,
@@ -154,9 +166,10 @@ private:
 
     log_err_handler _err_handler;
 
-    bool _flush_requested;
+    std::atomic<bool> _flush_requested;
+    std::atomic<bool> _can_flush;
 
-    bool _terminate_requested;
+    std::atomic<bool> _terminate_requested;
 
 
     // overflow policy
@@ -172,7 +185,8 @@ private:
     const std::function<void()> _worker_teardown_cb;
 
     // worker thread
-    std::thread _worker_thread;
+    // TODO: change to actually always be a thread pool, but single uses just one thread
+    std::vector<std::thread> _worker_threads;
 
     void push_msg(async_msg&& new_msg);
 
@@ -198,6 +212,30 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 // async_sink class implementation
 ///////////////////////////////////////////////////////////////////////////////
+inline std::shared_ptr<spdlog::details::async_log_helper> spdlog::details::async_log_helper::pooled_async_log_helper(
+    formatter_ptr formatter,
+    const std::vector<sink_ptr>& sinks,
+    size_t queue_size,
+    log_err_handler err_handler,
+    const async_overflow_policy overflow_policy,
+    const std::function<void()>& worker_warmup_cb,
+    const std::chrono::milliseconds& flush_interval_ms,
+    const std::function<void()>& worker_teardown_cb
+)
+{
+    static auto pooled(std::make_shared<spdlog::details::async_log_helper>(
+        formatter,
+        sinks,
+        queue_size,
+        err_handler,
+        overflow_policy,
+        worker_warmup_cb,
+        flush_interval_ms,
+        worker_teardown_cb
+    ));
+    return pooled;
+}
+
 inline spdlog::details::async_log_helper::async_log_helper(
     formatter_ptr formatter,
     const std::vector<sink_ptr>& sinks,
@@ -216,9 +254,14 @@ inline spdlog::details::async_log_helper::async_log_helper(
     _overflow_policy(overflow_policy),
     _worker_warmup_cb(worker_warmup_cb),
     _flush_interval_ms(flush_interval_ms),
-    _worker_teardown_cb(worker_teardown_cb),
-    _worker_thread(&async_log_helper::worker_loop, this)
-{}
+    _worker_teardown_cb(worker_teardown_cb)
+{
+    // TODO: number of threads
+    size_t num_workers = 4;
+    for (int i = 0; i < num_workers; ++i) {
+        _worker_threads.emplace_back(&async_log_helper::worker_loop, this);
+    }
+}
 
 // Send to the worker thread termination message(level=off)
 // and wait for it to finish gracefully
@@ -227,7 +270,9 @@ inline spdlog::details::async_log_helper::~async_log_helper()
     try
     {
         push_msg(async_msg(async_msg_type::terminate));
-        _worker_thread.join();
+        for (auto& thrd: _worker_threads) {
+            thrd.join();
+        }
     }
     catch (...) // don't crash in destructor
     {
@@ -302,12 +347,12 @@ inline bool spdlog::details::async_log_helper::process_next_msg(log_clock::time_
         switch (incoming_async_msg.msg_type)
         {
         case async_msg_type::flush:
-            _flush_requested = true;
+            _flush_requested = true;  // TODO: atomic bool/counter?
             break;
 
         case async_msg_type::terminate:
             _flush_requested = true;
-            _terminate_requested = true;
+            _terminate_requested = true;  // TODO: atomic bool?
             break;
 
         default:
@@ -339,14 +384,22 @@ inline bool spdlog::details::async_log_helper::process_next_msg(log_clock::time_
 // flush all sinks if _flush_interval_ms has expired
 inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush)
 {
-    auto should_flush = _flush_requested || (_flush_interval_ms != std::chrono::milliseconds::zero() && now - last_flush >= _flush_interval_ms);
+    bool can_flush = _can_flush.exchange(false);
+    if (!can_flush) {
+        return;
+    }
+
+    bool flush_requested = _flush_requested.exchange(false);
+    auto should_flush = flush_requested || (_flush_interval_ms != std::chrono::milliseconds::zero() && now - last_flush >= _flush_interval_ms);
     if (should_flush)
     {
+        // TODO: mutex here, as N threads may flush at same time
         for (auto &s : _sinks)
             s->flush();
         now = last_flush = details::os::now();
-        _flush_requested = false;
     }
+    // TODO: needs a guard object in case something throws!
+    _can_flush = true;
 }
 
 inline void spdlog::details::async_log_helper::set_formatter(formatter_ptr msg_formatter)
