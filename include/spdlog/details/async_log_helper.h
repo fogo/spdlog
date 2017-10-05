@@ -27,11 +27,19 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <deque>
+#include <unordered_map>
 
 namespace spdlog
 {
 namespace details
 {
+
+struct async_logger_ref
+{
+    formatter_ptr formatter;
+    std::vector<std::shared_ptr<sinks::sink>> sinks;
+};
 
 class async_log_helper
 {
@@ -67,7 +75,8 @@ async_msg(async_msg&& other) SPDLOG_NOEXCEPT:
                     msg_id(other.msg_id)
         {}
 
-        async_msg(async_msg_type m_type):
+        async_msg(const std::string& logger_name, async_msg_type m_type):
+            logger_name(logger_name),
             level(level::info),
             thread_id(0),
             msg_type(m_type),
@@ -163,20 +172,19 @@ public:
 
     void set_formatter(formatter_ptr);
 
-    void flush(bool wait_for_q);
+    void flush(const std::string& logger_name, bool wait_for_q);
 
     void set_error_handler(spdlog::log_err_handler err_handler);
 
 private:
-    formatter_ptr _formatter;
-    std::vector<std::shared_ptr<sinks::sink>> _sinks;
+    std::unordered_map<std::string, spdlog::details::async_logger_ref> _loggers;
 
     // queue of messages to log
     q_type _q;
 
     log_err_handler _err_handler;
 
-    std::atomic<bool> _flush_requested;
+    std::deque<std::string> _flush_requested;
     std::mutex _flush_mutex;
 
     std::atomic<bool> _terminate_requested;
@@ -260,17 +268,20 @@ inline spdlog::details::async_log_helper::async_log_helper(
     const std::function<void()>& worker_warmup_cb,
     const std::chrono::milliseconds& flush_interval_ms,
     const std::function<void()>& worker_teardown_cb):
-    _formatter(formatter),
-    _sinks(sinks),
     _q(queue_size),
     _err_handler(err_handler),
-    _flush_requested(false),
     _terminate_requested(false),
     _overflow_policy(overflow_policy),
     _worker_warmup_cb(worker_warmup_cb),
     _flush_interval_ms(flush_interval_ms),
     _worker_teardown_cb(worker_teardown_cb)
 {
+    // TODO: do this right!
+    async_logger_ref logger;
+    logger.formatter = formatter;
+    logger.sinks = sinks;
+    _loggers["spd"] = logger;
+
     for (int i = 0; i < num_workers; ++i) {
         _worker_threads.emplace_back(&async_log_helper::worker_loop, this);
     }
@@ -305,7 +316,7 @@ inline spdlog::details::async_log_helper::~async_log_helper()
 {
     try
     {
-        push_msg(async_msg(async_msg_type::terminate));
+        push_msg(async_msg("", async_msg_type::terminate));
         for (auto& thrd: _worker_threads) {
             thrd.join();
         }
@@ -338,9 +349,9 @@ inline void spdlog::details::async_log_helper::push_msg(details::async_log_helpe
 }
 
 // optionally wait for the queue be empty and request flush from the sinks
-inline void spdlog::details::async_log_helper::flush(bool wait_for_q)
+inline void spdlog::details::async_log_helper::flush(const std::string& logger_name, bool wait_for_q)
 {
-    push_msg(async_msg(async_msg_type::flush));
+    push_msg(async_msg(logger_name, async_msg_type::flush));
     if (wait_for_q)
         wait_empty_q(); //return only make after the above flush message was processed
 }
@@ -382,20 +393,23 @@ inline bool spdlog::details::async_log_helper::process_next_msg(log_clock::time_
         last_pop = details::os::now();
         switch (incoming_async_msg.msg_type)
         {
-        case async_msg_type::flush:
-            _flush_requested = true;
+        case async_msg_type::flush: {
+            std::lock_guard<std::mutex> lock(_flush_mutex);
+            _flush_requested.push_back(incoming_async_msg.logger_name);
             break;
+        }
 
         case async_msg_type::terminate:
-            _flush_requested = true;
             _terminate_requested = true;
             break;
 
         default:
+            async_logger_ref& logger = _loggers[incoming_async_msg.logger_name];
+
             log_msg incoming_log_msg;
             incoming_async_msg.fill_log_msg(incoming_log_msg);
-            _formatter->format(incoming_log_msg);
-            for (auto &s : _sinks)
+                logger.formatter->format(incoming_log_msg);
+            for (auto &s : logger.sinks)
             {
                 if (s->should_log(incoming_log_msg.level))
                 {
@@ -425,12 +439,21 @@ inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::
     if (!_flush_mutex.try_lock()) {
         return;
     }
-    bool flush_requested = _flush_requested.exchange(false);
+    bool flush_requested = !_flush_requested.empty() || _terminate_requested;
     auto should_flush = flush_requested || (_flush_interval_ms != std::chrono::milliseconds::zero() && now - last_flush >= _flush_interval_ms);
     if (should_flush)
     {
-        for (auto &s : _sinks)
-            s->flush();
+        if (!_terminate_requested) {
+            for (auto &f : _flush_requested) {
+                for (auto &s : _loggers[f].sinks)
+                    s->flush();
+            }
+        } else {
+            for (auto &l : _loggers) {
+                for (auto &s : l.second.sinks)
+                    s->flush();
+            }
+        }
         now = last_flush = details::os::now();
     }
     // TODO: improve
@@ -439,7 +462,8 @@ inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::
 
 inline void spdlog::details::async_log_helper::set_formatter(formatter_ptr msg_formatter)
 {
-    _formatter = msg_formatter;
+    // TODO: will need to give logger name too!
+    //_formatter = msg_formatter;
 }
 
 
