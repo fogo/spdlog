@@ -52,10 +52,23 @@ public:
         std::lock_guard<Mutex> lock(_mutex);
         throw_if_exists(logger_name);
         std::shared_ptr<logger> new_logger;
-        if (_async_mode)
-            new_logger = std::make_shared<async_logger>(logger_name, sinks_begin, sinks_end, _async_q_size, _overflow_policy, _worker_warmup_cb, _flush_interval_ms, _worker_teardown_cb);
-        else
-            new_logger = std::make_shared<logger>(logger_name, sinks_begin, sinks_end);
+        switch (_async_cfg.mode) {
+            case async_cfg::disabled: {
+                new_logger = std::make_shared<logger>(logger_name, sinks_begin, sinks_end);
+                break;
+            }
+            case async_cfg::individual: {
+                new_logger = std::make_shared<async_logger>(logger_name, sinks_begin, sinks_end, _async_q_size, _overflow_policy, _worker_warmup_cb, _flush_interval_ms, _worker_teardown_cb);
+                break;
+            }
+            case async_cfg::pool: {
+                new_logger = std::make_shared<async_logger>(logger_name, sinks_begin, sinks_end, _async_q_size, _async_cfg.num_workers, _overflow_policy, _worker_warmup_cb, _flush_interval_ms, _worker_teardown_cb);
+                break;
+            }
+            default: {
+                throw spdlog_ex("unexpected async configuration");
+            }
+        }
 
         if (_formatter)
             new_logger->set_formatter(_formatter);
@@ -163,7 +176,22 @@ public:
     void set_async_mode(size_t q_size, const async_overflow_policy overflow_policy, const std::function<void()>& worker_warmup_cb, const std::chrono::milliseconds& flush_interval_ms, const std::function<void()>& worker_teardown_cb)
     {
         std::lock_guard<Mutex> lock(_mutex);
-        _async_mode = true;
+        _async_cfg.mode = _async_cfg.individual;
+        _async_q_size = q_size;
+        _overflow_policy = overflow_policy;
+        _worker_warmup_cb = worker_warmup_cb;
+        _flush_interval_ms = flush_interval_ms;
+        _worker_teardown_cb = worker_teardown_cb;
+    }
+
+    void set_pooled_async_mode(size_t q_size, size_t num_workers, const async_overflow_policy overflow_policy, const std::function<void()>& worker_warmup_cb, const std::chrono::milliseconds& flush_interval_ms, const std::function<void()>& worker_teardown_cb)
+    {
+        std::lock_guard<Mutex> lock(_mutex);
+        _async_cfg.mode = _async_cfg.pool;
+        if (num_workers == 0) {
+            num_workers = std::thread::hardware_concurrency();
+        }
+        _async_cfg.num_workers = num_workers;
         _async_q_size = q_size;
         _overflow_policy = overflow_policy;
         _worker_warmup_cb = worker_warmup_cb;
@@ -174,7 +202,7 @@ public:
     void set_sync_mode()
     {
         std::lock_guard<Mutex> lock(_mutex);
-        _async_mode = false;
+        _async_cfg.mode = _async_cfg.disabled;
     }
 
     static registry_t<Mutex>& instance()
@@ -184,6 +212,16 @@ public:
     }
 
 private:
+    struct async_cfg {
+        enum mode_enum {
+            disabled,
+            individual,
+            pool
+        };
+        mode_enum mode = disabled;
+        size_t num_workers = 0;
+    };
+
     registry_t<Mutex>() {}
     registry_t<Mutex>(const registry_t<Mutex>&) = delete;
     registry_t<Mutex>& operator=(const registry_t<Mutex>&) = delete;
@@ -198,7 +236,7 @@ private:
     formatter_ptr _formatter;
     level::level_enum _level = level::info;
     log_err_handler _err_handler;
-    bool _async_mode = false;
+    async_cfg _async_cfg;
     size_t _async_q_size = 0;
     async_overflow_policy _overflow_policy = async_overflow_policy::block_retry;
     std::function<void()> _worker_warmup_cb = nullptr;

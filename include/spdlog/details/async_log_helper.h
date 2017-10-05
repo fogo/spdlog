@@ -244,6 +244,9 @@ inline std::shared_ptr<spdlog::details::async_log_helper> spdlog::details::async
         flush_interval_ms,
         worker_teardown_cb
     ));
+
+    // TODO: necessary to update sinks!
+
     return pool;
 }
 

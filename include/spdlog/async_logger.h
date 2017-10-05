@@ -44,6 +44,17 @@ public:
                  const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
                  const std::function<void()>& worker_teardown_cb = nullptr);
 
+    template<class It>
+    async_logger(const std::string& name,
+                 const It& begin,
+                 const It& end,
+                 size_t queue_size,
+                 size_t num_workers,
+                 const async_overflow_policy overflow_policy =  async_overflow_policy::block_retry,
+                 const std::function<void()>& worker_warmup_cb = nullptr,
+                 const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+                 const std::function<void()>& worker_teardown_cb = nullptr);
+
     async_logger(const std::string& logger_name,
                  sinks_init_list sinks,
                  size_t queue_size,
