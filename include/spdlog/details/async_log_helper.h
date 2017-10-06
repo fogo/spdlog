@@ -27,6 +27,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <deque>
+#include <unordered_map>
 
 namespace spdlog
 {
@@ -59,16 +61,17 @@ protected:
 
 
         async_msg(async_msg&& other) SPDLOG_NOEXCEPT:
-        logger_name(std::move(other.logger_name)),
-                    level(std::move(other.level)),
-                    time(std::move(other.time)),
-                    thread_id(other.thread_id),
-                    txt(std::move(other.txt)),
-                    msg_type(std::move(other.msg_type)),
-                    msg_id(other.msg_id)
+            logger_name(std::move(other.logger_name)),
+            level(std::move(other.level)),
+            time(std::move(other.time)),
+            thread_id(other.thread_id),
+            txt(std::move(other.txt)),
+            msg_type(std::move(other.msg_type)),
+            msg_id(other.msg_id)
         {}
 
-        async_msg(async_msg_type m_type):
+        async_msg(const std::string& l_name, async_msg_type m_type):
+            logger_name(l_name),
             level(level::info),
             thread_id(0),
             msg_type(m_type),
@@ -152,6 +155,22 @@ protected:
     // wait until the queue is empty
     void wait_empty_q();
 
+    // TODO: all below should become virtual
+    virtual void set_formatter(const std::string& logger_name, formatter_ptr) = 0;
+
+    virtual void flush(const std::string& logger_name, bool wait_for_q) = 0;
+
+    virtual void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) = 0;
+
+    // worker thread main loop
+    virtual void worker_loop() = 0;
+
+    // pop next message from the queue and process it. will set the last_pop to the pop time
+    // return false if termination of the queue is required
+    virtual bool process_next_msg(log_clock::time_point& last_pop, log_clock::time_point& last_flush) = 0;
+
+    virtual void handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush) = 0;
+
 };
 
 class async_log_helper : public base_async_log_helper
@@ -169,11 +188,11 @@ public:
     ~async_log_helper() override;
 
     // TODO: all below should become virtual
-    void set_formatter(const std::string& logger_name, formatter_ptr);
+    void set_formatter(const std::string& logger_name, formatter_ptr) override;
 
-    void flush(const std::string& logger_name, bool wait_for_q);
+    void flush(const std::string& logger_name, bool wait_for_q) override;
 
-    void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler);
+    void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) override;
 
 private:
     // worker thread
@@ -196,13 +215,82 @@ private:
 
     // TODO: all below should become virtual
     // worker thread main loop
-    void worker_loop();
+    void worker_loop() override;
 
     // pop next message from the queue and process it. will set the last_pop to the pop time
     // return false if termination of the queue is required
-    bool process_next_msg(log_clock::time_point& last_pop, log_clock::time_point& last_flush);
+    bool process_next_msg(log_clock::time_point& last_pop, log_clock::time_point& last_flush) override;
 
-    void handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush);
+    void handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush) override;
+};
+
+class pooled_log_helper : public base_async_log_helper
+{
+public:
+    static void create(size_t queue_size,
+                       const log_err_handler err_handler,
+                       const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
+                       const std::function<void()>& worker_warmup_cb = nullptr,
+                       const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+                       const std::function<void()>& worker_teardown_cb = nullptr);
+    static std::shared_ptr<pooled_log_helper> get();
+
+    ~pooled_log_helper() override;
+
+    void register_logger(const std::string& logger_name,
+                    formatter_ptr formatter,
+                    const std::vector<sink_ptr>& sinks,
+                    size_t queue_size,
+                    const log_err_handler err_handler);
+
+    // TODO: all below should become virtual
+    void set_formatter(const std::string& logger_name, formatter_ptr) override;
+
+    void flush(const std::string& logger_name, bool wait_for_q) override;
+
+    void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) override;
+
+private:
+    pooled_log_helper(size_t queue_size,
+                      const log_err_handler err_handler,
+                      const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
+                      const std::function<void()>& worker_warmup_cb = nullptr,
+                      const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+                      const std::function<void()>& worker_teardown_cb = nullptr);
+
+    // worker thread
+    std::vector<std::thread> _worker_threads;
+
+    struct logger_props {
+        formatter_ptr formatter;
+        std::vector<std::shared_ptr<sinks::sink>> sinks;
+        log_err_handler err_handler;
+    };
+
+    std::unordered_map<std::string, logger_props> _loggers;
+    std::mutex _loggers_mutex;
+
+    std::deque<std::string> _flush_requested;
+    std::mutex _flush_mutex;
+
+    std::atomic<bool> _terminate_requested;
+
+    // TODO: may be moved back to base
+    // worker thread warmup callback - one can set thread priority, affinity, etc
+    const std::function<void()> _worker_warmup_cb;
+
+    // worker thread teardown callback
+    const std::function<void()> _worker_teardown_cb;
+
+    // TODO: all below should become virtual
+    // worker thread main loop
+    void worker_loop() override;
+
+    // pop next message from the queue and process it. will set the last_pop to the pop time
+    // return false if termination of the queue is required
+    bool process_next_msg(log_clock::time_point& last_pop, log_clock::time_point& last_flush) override;
+
+    void handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush) override;
 };
 
 }
@@ -247,7 +335,7 @@ inline spdlog::details::async_log_helper::~async_log_helper()
 {
     try
     {
-        push_msg(async_msg(async_msg_type::terminate));
+        push_msg(async_msg("", async_msg_type::terminate));
         _worker_thread.join();
     }
     catch (...) // don't crash in destructor
@@ -280,7 +368,8 @@ inline void spdlog::details::base_async_log_helper::push_msg(details::base_async
 // optionally wait for the queue be empty and request flush from the sinks
 inline void spdlog::details::async_log_helper::flush(const std::string& logger_name, bool wait_for_q)
 {
-    push_msg(async_msg(async_msg_type::flush));
+    // TODO: may be moved back to base
+    push_msg(async_msg(logger_name, async_msg_type::flush));
     if (wait_for_q)
         wait_empty_q(); //return only make after the above flush message was processed
 }
