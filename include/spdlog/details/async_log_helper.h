@@ -605,6 +605,7 @@ inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::
 inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush)
 {
     if (_flush_mutex.try_lock()) {
+        std::lock_guard<std::mutex> lock(_flush_mutex, std::adopt_lock);
         if (!_flush_requested.empty())
         {
             // TODO: too much locking?
@@ -625,9 +626,6 @@ inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock:
             now = last_flush = details::os::now();
             _flush_requested.clear();
         }
-
-        // TODO: how lock_guard works w/ try_lock strategy?
-        _flush_mutex.unlock();
     }
 }
 
