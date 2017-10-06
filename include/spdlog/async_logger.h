@@ -28,7 +28,7 @@ namespace spdlog
 
 namespace details
 {
-class async_log_helper;
+class base_async_log_helper;
 }
 
 class async_logger SPDLOG_FINAL :public logger
@@ -74,7 +74,7 @@ protected:
     void _set_pattern(const std::string& pattern, pattern_time_type pattern_time) override;
 
 private:
-    std::unique_ptr<details::async_log_helper> _async_log_helper;
+    std::shared_ptr<details::base_async_log_helper> _async_log_helper;
 };
 }
 

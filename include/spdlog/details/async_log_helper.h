@@ -132,6 +132,10 @@ public:
     // stop logging and join the back thread
     virtual ~base_async_log_helper() {};
 
+    virtual void set_formatter(const std::string& logger_name, formatter_ptr) = 0;
+    virtual void flush(const std::string& logger_name, bool wait_for_q) = 0;
+    virtual void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) = 0;
+
 protected:
     base_async_log_helper(
         size_t queue_size,
@@ -154,13 +158,6 @@ protected:
 
     // wait until the queue is empty
     void wait_empty_q();
-
-    // TODO: all below should become virtual
-    virtual void set_formatter(const std::string& logger_name, formatter_ptr) = 0;
-
-    virtual void flush(const std::string& logger_name, bool wait_for_q) = 0;
-
-    virtual void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) = 0;
 
     // worker thread main loop
     virtual void worker_loop() = 0;
