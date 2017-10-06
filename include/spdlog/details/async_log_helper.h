@@ -223,14 +223,25 @@ private:
 
 class pooled_log_helper : public base_async_log_helper
 {
+private:
+    struct private_token {
+        explicit private_token(int) {}
+    };
+
 public:
     static void create(size_t queue_size,
-                       const log_err_handler err_handler,
                        const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
                        const std::function<void()>& worker_warmup_cb = nullptr,
                        const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
                        const std::function<void()>& worker_teardown_cb = nullptr);
     static std::shared_ptr<pooled_log_helper> get();
+
+    pooled_log_helper(const private_token& private_token,
+                      size_t queue_size,
+                      const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
+                      const std::function<void()>& worker_warmup_cb = nullptr,
+                      const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+                      const std::function<void()>& worker_teardown_cb = nullptr);
 
     ~pooled_log_helper() override;
 
@@ -266,13 +277,6 @@ private:
     std::mutex _flush_mutex;
 
     std::atomic<bool> _terminate_requested;
-
-    pooled_log_helper(size_t queue_size,
-                      const log_err_handler err_handler,
-                      const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
-                      const std::function<void()>& worker_warmup_cb = nullptr,
-                      const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
-                      const std::function<void()>& worker_teardown_cb = nullptr);
 
     // TODO: may be moved back to base
     // worker thread warmup callback - one can set thread priority, affinity, etc
@@ -327,6 +331,29 @@ inline spdlog::details::async_log_helper::async_log_helper(
     _worker_teardown_cb(worker_teardown_cb),
     _worker_thread(&async_log_helper::worker_loop, this)
 {}
+
+inline void spdlog::details::pooled_log_helper::create(
+    size_t queue_size,
+    const async_overflow_policy overflow_policy,
+    const std::function<void()>& worker_warmup_cb,
+    const std::chrono::milliseconds& flush_interval_ms,
+    const std::function<void()>& worker_teardown_cb)
+{
+    static std::shared_ptr<spdlog::details::pooled_log_helper> pool = std::make_shared<spdlog::details::pooled_log_helper>(
+        private_token{0},
+        queue_size,
+        overflow_policy,
+        worker_warmup_cb,
+        flush_interval_ms,
+        worker_teardown_cb
+    );
+    _instance = pool;
+}
+
+inline std::shared_ptr<spdlog::details::pooled_log_helper> spdlog::details::pooled_log_helper::get()
+{
+    return _instance;
+}
 
 // Send to the worker thread termination message(level=off)
 // and wait for it to finish gracefully
