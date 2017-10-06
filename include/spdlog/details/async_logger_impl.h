@@ -54,14 +54,14 @@ inline spdlog::async_logger::async_logger(const std::string& logger_name,
 
 inline void spdlog::async_logger::flush()
 {
-    _async_log_helper->flush(true);
+    _async_log_helper->flush(_name, true);
 }
 
 // Error handler
 inline void spdlog::async_logger::set_error_handler(spdlog::log_err_handler err_handler)
 {
     _err_handler = err_handler;
-    _async_log_helper->set_error_handler(err_handler);
+    _async_log_helper->set_error_handler(_name, err_handler);
 
 }
 inline spdlog::log_err_handler spdlog::async_logger::error_handler()
@@ -73,13 +73,13 @@ inline spdlog::log_err_handler spdlog::async_logger::error_handler()
 inline void spdlog::async_logger::_set_formatter(spdlog::formatter_ptr msg_formatter)
 {
     _formatter = msg_formatter;
-    _async_log_helper->set_formatter(_formatter);
+    _async_log_helper->set_formatter(_name, _formatter);
 }
 
 inline void spdlog::async_logger::_set_pattern(const std::string& pattern, pattern_time_type pattern_time)
 {
     _formatter = std::make_shared<pattern_formatter>(pattern, pattern_time);
-    _async_log_helper->set_formatter(_formatter);
+    _async_log_helper->set_formatter(_name, _formatter);
 }
 
 
@@ -92,7 +92,7 @@ inline void spdlog::async_logger::_sink_it(details::log_msg& msg)
 #endif
         _async_log_helper->log(msg);
         if (_should_flush_on(msg))
-            _async_log_helper->flush(false); // do async flush
+            _async_log_helper->flush(_name, false); // do async flush
     }
     catch (const std::exception &ex)
     {

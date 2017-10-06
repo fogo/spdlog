@@ -139,11 +139,11 @@ public:
     // stop logging and join the back thread
     ~async_log_helper();
 
-    void set_formatter(formatter_ptr);
+    void set_formatter(const std::string& logger_name, formatter_ptr);
 
-    void flush(bool wait_for_q);
+    void flush(const std::string& logger_name, bool wait_for_q);
 
-    void set_error_handler(spdlog::log_err_handler err_handler);
+    void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler);
 
 private:
     formatter_ptr _formatter;
@@ -257,7 +257,7 @@ inline void spdlog::details::async_log_helper::push_msg(details::async_log_helpe
 }
 
 // optionally wait for the queue be empty and request flush from the sinks
-inline void spdlog::details::async_log_helper::flush(bool wait_for_q)
+inline void spdlog::details::async_log_helper::flush(const std::string& logger_name, bool wait_for_q)
 {
     push_msg(async_msg(async_msg_type::flush));
     if (wait_for_q)
@@ -349,7 +349,7 @@ inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::
     }
 }
 
-inline void spdlog::details::async_log_helper::set_formatter(formatter_ptr msg_formatter)
+inline void spdlog::details::async_log_helper::set_formatter(const std::string& logger_name, formatter_ptr msg_formatter)
 {
     _formatter = msg_formatter;
 }
@@ -390,7 +390,7 @@ inline void spdlog::details::async_log_helper::wait_empty_q()
     }
 }
 
-inline void spdlog::details::async_log_helper::set_error_handler(spdlog::log_err_handler err_handler)
+inline void spdlog::details::async_log_helper::set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler)
 {
     _err_handler = err_handler;
 }
