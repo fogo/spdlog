@@ -133,7 +133,7 @@ public:
     virtual ~base_async_log_helper() {};
 
     virtual void set_formatter(const std::string& logger_name, formatter_ptr) = 0;
-    virtual void flush(const std::string& logger_name, bool wait_for_q) = 0;
+    void flush(const std::string& logger_name, bool wait_for_q);
     virtual void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) = 0;
 
 protected:
@@ -195,8 +195,6 @@ public:
 
     void set_formatter(const std::string& logger_name, formatter_ptr) override;
 
-    void flush(const std::string& logger_name, bool wait_for_q) override;
-
     void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) override;
 
 private:
@@ -254,8 +252,6 @@ public:
                     const log_err_handler err_handler);
 
     void set_formatter(const std::string& logger_name, formatter_ptr) override;
-
-    void flush(const std::string& logger_name, bool wait_for_q) override;
 
     void set_error_handler(const std::string& logger_name, spdlog::log_err_handler err_handler) override;
 
@@ -437,17 +433,8 @@ inline void spdlog::details::base_async_log_helper::push_msg(details::base_async
 }
 
 // optionally wait for the queue be empty and request flush from the sinks
-inline void spdlog::details::async_log_helper::flush(const std::string& logger_name, bool wait_for_q)
+inline void spdlog::details::base_async_log_helper::flush(const std::string& logger_name, bool wait_for_q)
 {
-    // TODO: may be moved back to base
-    push_msg(async_msg(logger_name, async_msg_type::flush));
-    if (wait_for_q)
-        wait_empty_q(); //return only make after the above flush message was processed
-}
-
-inline void spdlog::details::pooled_log_helper::flush(const std::string& logger_name, bool wait_for_q)
-{
-    // TODO: may be moved back to base
     push_msg(async_msg(logger_name, async_msg_type::flush));
     if (wait_for_q)
         wait_empty_q(); //return only make after the above flush message was processed
@@ -475,8 +462,6 @@ inline void spdlog::details::async_log_helper::worker_loop()
         }
     }
     if (_worker_teardown_cb) _worker_teardown_cb();
-
-
 }
 
 inline void spdlog::details::pooled_log_helper::worker_loop()
@@ -507,8 +492,6 @@ inline void spdlog::details::pooled_log_helper::worker_loop()
         }
     }
     if (_worker_teardown_cb) _worker_teardown_cb();
-
-
 }
 
 // process next message in the queue
