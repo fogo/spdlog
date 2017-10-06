@@ -605,11 +605,11 @@ inline void spdlog::details::async_log_helper::handle_flush_interval(log_clock::
 inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush)
 {
     if (_flush_mutex.try_lock()) {
-        std::lock_guard<std::mutex> lock(_flush_mutex, std::adopt_lock);
+        std::lock_guard<std::mutex> flush_lock(_flush_mutex, std::adopt_lock);
         if (!_flush_requested.empty())
         {
             // TODO: too much locking?
-            std::lock_guard<std::mutex> lock(_loggers_mutex);
+            std::lock_guard<std::mutex> logger_lock(_loggers_mutex);
             for (auto &name: _flush_requested)
                 for (auto &s : _loggers[name].sinks)
                     s->flush();
@@ -619,7 +619,7 @@ inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock:
                     now - last_flush >= _flush_interval_ms) ||_terminate_requested)
         {
             // TODO: too much locking?
-            std::lock_guard<std::mutex> lock(_loggers_mutex);
+            std::lock_guard<std::mutex> logger_lock(_loggers_mutex);
             for (auto &logger: _loggers)
                 for (auto &s : logger.second.sinks)
                     s->flush();
