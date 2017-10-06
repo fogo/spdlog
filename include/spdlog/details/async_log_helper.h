@@ -140,7 +140,10 @@ protected:
     base_async_log_helper(
         size_t queue_size,
         const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
-        const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero());
+        const std::function<void()>& worker_warmup_cb = nullptr,
+        const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
+        const std::function<void()>& worker_teardown_cb = nullptr
+    );
 
     // queue of messages to log
     q_type _q;
@@ -150,6 +153,12 @@ protected:
 
     // auto periodic sink flush parameter
     const std::chrono::milliseconds _flush_interval_ms;
+
+    // worker thread warmup callback - one can set thread priority, affinity, etc
+    const std::function<void()> _worker_warmup_cb;
+
+    // worker thread teardown callback
+    const std::function<void()> _worker_teardown_cb;
 
     void push_msg(async_msg&& new_msg);
 
@@ -184,7 +193,6 @@ public:
 
     ~async_log_helper() override;
 
-    // TODO: all below should become virtual
     void set_formatter(const std::string& logger_name, formatter_ptr) override;
 
     void flush(const std::string& logger_name, bool wait_for_q) override;
@@ -204,13 +212,6 @@ private:
 
     bool _terminate_requested;
 
-    // worker thread warmup callback - one can set thread priority, affinity, etc
-    const std::function<void()> _worker_warmup_cb;
-
-    // worker thread teardown callback
-    const std::function<void()> _worker_teardown_cb;
-
-    // TODO: all below should become virtual
     // worker thread main loop
     void worker_loop() override;
 
@@ -230,6 +231,7 @@ private:
 
 public:
     static void create(size_t queue_size,
+                       size_t num_workers,
                        const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
                        const std::function<void()>& worker_warmup_cb = nullptr,
                        const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
@@ -238,6 +240,7 @@ public:
 
     pooled_log_helper(const private_token& private_token,
                       size_t queue_size,
+                      size_t num_workers,
                       const async_overflow_policy overflow_policy = async_overflow_policy::block_retry,
                       const std::function<void()>& worker_warmup_cb = nullptr,
                       const std::chrono::milliseconds& flush_interval_ms = std::chrono::milliseconds::zero(),
@@ -248,10 +251,8 @@ public:
     void register_logger(const std::string& logger_name,
                     formatter_ptr formatter,
                     const std::vector<sink_ptr>& sinks,
-                    size_t queue_size,
                     const log_err_handler err_handler);
 
-    // TODO: all below should become virtual
     void set_formatter(const std::string& logger_name, formatter_ptr) override;
 
     void flush(const std::string& logger_name, bool wait_for_q) override;
@@ -278,14 +279,6 @@ private:
 
     std::atomic<bool> _terminate_requested;
 
-    // TODO: may be moved back to base
-    // worker thread warmup callback - one can set thread priority, affinity, etc
-    const std::function<void()> _worker_warmup_cb;
-
-    // worker thread teardown callback
-    const std::function<void()> _worker_teardown_cb;
-
-    // TODO: all below should become virtual
     // worker thread main loop
     void worker_loop() override;
 
@@ -295,6 +288,7 @@ private:
 
     void handle_flush_interval(log_clock::time_point& now, log_clock::time_point& last_flush) override;
 };
+std::shared_ptr<pooled_log_helper> pooled_log_helper::_instance = nullptr;
 
 }
 }
@@ -305,10 +299,14 @@ private:
 inline spdlog::details::base_async_log_helper::base_async_log_helper(
     size_t queue_size,
     const async_overflow_policy overflow_policy,
-    const std::chrono::milliseconds& flush_interval_ms):
+    const std::function<void()>& worker_warmup_cb,
+    const std::chrono::milliseconds& flush_interval_ms,
+    const std::function<void()>& worker_teardown_cb):
     _q(queue_size),
     _overflow_policy(overflow_policy),
-    _flush_interval_ms(flush_interval_ms)
+    _flush_interval_ms(flush_interval_ms),
+    _worker_warmup_cb(worker_warmup_cb),
+    _worker_teardown_cb(worker_teardown_cb)
 {}
 
 
@@ -321,38 +319,70 @@ inline spdlog::details::async_log_helper::async_log_helper(
     const std::function<void()>& worker_warmup_cb,
     const std::chrono::milliseconds& flush_interval_ms,
     const std::function<void()>& worker_teardown_cb):
-    base_async_log_helper(queue_size, overflow_policy, flush_interval_ms),
+    base_async_log_helper(queue_size, overflow_policy, worker_warmup_cb, flush_interval_ms, worker_teardown_cb),
     _formatter(formatter),
     _sinks(sinks),
     _err_handler(err_handler),
     _flush_requested(false),
     _terminate_requested(false),
-    _worker_warmup_cb(worker_warmup_cb),
-    _worker_teardown_cb(worker_teardown_cb),
     _worker_thread(&async_log_helper::worker_loop, this)
 {}
 
 inline void spdlog::details::pooled_log_helper::create(
     size_t queue_size,
+    size_t num_workers,
     const async_overflow_policy overflow_policy,
     const std::function<void()>& worker_warmup_cb,
     const std::chrono::milliseconds& flush_interval_ms,
     const std::function<void()>& worker_teardown_cb)
 {
-    static std::shared_ptr<spdlog::details::pooled_log_helper> pool = std::make_shared<spdlog::details::pooled_log_helper>(
-        private_token{0},
-        queue_size,
-        overflow_policy,
-        worker_warmup_cb,
-        flush_interval_ms,
-        worker_teardown_cb
-    );
-    _instance = pool;
+    _instance = std::make_shared<spdlog::details::pooled_log_helper>(
+            private_token{0},
+            queue_size,
+            num_workers,
+            overflow_policy,
+            worker_warmup_cb,
+            flush_interval_ms,
+            worker_teardown_cb
+    );;
 }
 
 inline std::shared_ptr<spdlog::details::pooled_log_helper> spdlog::details::pooled_log_helper::get()
 {
     return _instance;
+}
+
+inline spdlog::details::pooled_log_helper::pooled_log_helper(
+    const private_token& private_token,
+    size_t queue_size,
+    size_t num_workers,
+    const async_overflow_policy overflow_policy,
+    const std::function<void()>& worker_warmup_cb,
+    const std::chrono::milliseconds& flush_interval_ms,
+    const std::function<void()>& worker_teardown_cb):
+    base_async_log_helper(queue_size, overflow_policy, worker_warmup_cb, flush_interval_ms, worker_teardown_cb),
+    _terminate_requested(false)
+{
+    if (num_workers == 0) {
+        num_workers = std::thread::hardware_concurrency();
+    }
+
+    for (int i = 0; i < num_workers; ++i) {
+        _worker_threads.emplace_back(&pooled_log_helper::worker_loop, this);
+    }
+}
+
+void spdlog::details::pooled_log_helper::register_logger(const std::string& logger_name,
+     formatter_ptr formatter,
+     const std::vector<sink_ptr>& sinks,
+     const log_err_handler err_handler)
+{
+    std::lock_guard<std::mutex> lock(_loggers_mutex);
+    logger_props logger;
+    logger.sinks = sinks;
+    logger.formatter = formatter;
+    logger.err_handler = err_handler;
+    _loggers[logger_name] = logger;
 }
 
 // Send to the worker thread termination message(level=off)
@@ -463,12 +493,14 @@ inline void spdlog::details::pooled_log_helper::worker_loop()
         }
         catch (const std::exception &ex)
         {
+            std::lock_guard<std::mutex> lock(_loggers_mutex);
             for (auto& logger: _loggers) {
                 logger.second.err_handler(ex.what());
             }
         }
         catch (...)
         {
+            std::lock_guard<std::mutex> lock(_loggers_mutex);
             for (auto& logger: _loggers) {
                 logger.second.err_handler("Unknown exception");
             }
@@ -546,6 +578,7 @@ inline bool spdlog::details::pooled_log_helper::process_next_msg(log_clock::time
                 break;
 
             default:
+                std::lock_guard<std::mutex> lock(_loggers_mutex);
                 log_msg incoming_log_msg;
                 incoming_async_msg.fill_log_msg(incoming_log_msg);
 
@@ -591,6 +624,8 @@ inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock:
     if (_flush_mutex.try_lock()) {
         if (!_flush_requested.empty())
         {
+            // TODO: too much locking?
+            std::lock_guard<std::mutex> lock(_loggers_mutex);
             for (auto &name: _flush_requested)
                 for (auto &s : _loggers[name].sinks)
                     s->flush();
@@ -599,6 +634,8 @@ inline void spdlog::details::pooled_log_helper::handle_flush_interval(log_clock:
         } else if ((_flush_interval_ms != std::chrono::milliseconds::zero() &&
                     now - last_flush >= _flush_interval_ms) ||_terminate_requested)
         {
+            // TODO: too much locking?
+            std::lock_guard<std::mutex> lock(_loggers_mutex);
             for (auto &logger: _loggers)
                 for (auto &s : logger.second.sinks)
                     s->flush();

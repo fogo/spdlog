@@ -30,6 +30,17 @@ inline spdlog::async_logger::async_logger(const std::string& logger_name,
 {
 }
 
+template<class It>
+inline spdlog::async_logger::async_logger(const std::string& logger_name,
+                                          const It& begin,
+                                          const It& end) :
+    logger(logger_name, begin, end)
+{
+    std::shared_ptr<spdlog::details::pooled_log_helper> pooled = details::pooled_log_helper::get();
+    pooled->register_logger(logger_name, _formatter, _sinks, _err_handler);
+    _async_log_helper = pooled;
+}
+
 inline spdlog::async_logger::async_logger(const std::string& logger_name,
         sinks_init_list sinks_list,
         size_t queue_size,

@@ -249,8 +249,7 @@ inline void spdlog::set_async_mode(size_t queue_size, const async_overflow_polic
 
 inline void spdlog::set_pooled_async_mode(size_t queue_size, size_t num_workers, const async_overflow_policy overflow_policy, const std::function<void()>& worker_warmup_cb, const std::chrono::milliseconds& flush_interval_ms, const std::function<void()>& worker_teardown_cb)
 {
-    // TODO: change to actual pooled
-    details::registry::instance().set_async_mode(queue_size, overflow_policy, worker_warmup_cb, flush_interval_ms, worker_teardown_cb);
+    details::registry::instance().set_pooled_async_mode(queue_size, num_workers, overflow_policy, worker_warmup_cb, flush_interval_ms, worker_teardown_cb);
 }
 
 inline void spdlog::set_sync_mode()

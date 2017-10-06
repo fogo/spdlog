@@ -37,6 +37,11 @@ public:
     template<class It>
     async_logger(const std::string& name,
                  const It& begin,
+                 const It& end);
+
+    template<class It>
+    async_logger(const std::string& name,
+                 const It& begin,
                  const It& end,
                  size_t queue_size,
                  const async_overflow_policy overflow_policy =  async_overflow_policy::block_retry,
